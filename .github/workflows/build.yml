@@ -170,7 +170,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ steps.meta.outputs.created }}
             org.opencontainers.image.title=php-fpm-hardened
-            org.opencontainers.image.description=Hardened PHP-FPM image (Alpine) with pdo_mysql, gd and intl, rebuilt automatically when the official base image changes
+            org.opencontainers.image.description=Hardened PHP-FPM image (Alpine) with pdo_mysql, gd and intl – rebuilt automatically when the official base image or its Alpine packages get updates
             org.opencontainers.image.licenses=MIT
 
       - name: Smoke tests
