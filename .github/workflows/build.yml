@@ -50,7 +50,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compare base digest with published image
+      - name: Compare base digest and packages with published image
         id: compare
         env:
           EVENT: ${{ github.event_name }}
@@ -77,6 +77,15 @@ jobs:
             image_exists=false
           fi
 
+          # Alpine packages installed on top of the base (gd/intl libraries) get
+          # security fixes without the base digest changing. List the packages of
+          # the published image for which Alpine offers an upgrade.
+          pending_updates() {
+            docker run --rm --pull always --user root --entrypoint sh "$IMAGE:$MINOR_TAG" \
+              -c 'apk update -q >/dev/null && apk list --upgradable 2>/dev/null' \
+              | awk '{print $1}'
+          }
+
           build=true
           if [[ "$image_exists" != true ]]; then
             reason="published image $IMAGE:$MINOR_TAG not found"
@@ -86,6 +95,12 @@ jobs:
             reason="repository changed (push)"
           elif [[ "$FORCE" == true ]]; then
             reason="forced via workflow_dispatch"
+          elif ! updates="$(pending_updates)"; then
+            echo "::warning::Could not check the published image for Alpine package updates"
+            build=false
+            reason="base unchanged"
+          elif [[ -n "$updates" ]]; then
+            reason="Alpine package updates available: $(paste -sd ' ' <<<"$updates")"
           else
             build=false
             reason="base unchanged"
@@ -155,7 +170,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.created=${{ steps.meta.outputs.created }}
             org.opencontainers.image.title=php-fpm-hardened
-            org.opencontainers.image.description=Hardened PHP-FPM image (Alpine) with pdo_mysql, rebuilt automatically when the official base image changes
+            org.opencontainers.image.description=Hardened PHP-FPM image (Alpine) with pdo_mysql, gd and intl, rebuilt automatically when the official base image changes
             org.opencontainers.image.licenses=MIT
 
       - name: Smoke tests

@@ -3,10 +3,24 @@
 ARG PHP_BASE=php:8.5-fpm-alpine
 FROM ${PHP_BASE}
 
-# Pull in Alpine security fixes that are already released but not yet part of
-# the official base image (e.g. brotli-libs for CVE-2026-111497).
+# - apk upgrade: pull in Alpine security fixes that are already released but not
+#   yet part of the official base image (e.g. brotli-libs for CVE-2026-111497).
+# - Runtime libraries for gd (JPEG, WebP, PNG, FreeType) and intl stay in the image.
+#   icu-data-full provides all ICU locales; icu-libs alone ships only en_US/en_GB,
+#   so de_DE formatting would silently fall back to English rules.
+# - Headers and the compiler toolchain are installed as a virtual package and
+#   removed again in the same layer.
 RUN apk upgrade --no-cache \
- && docker-php-ext-install pdo_mysql \
+ && apk add --no-cache \
+      libpng libjpeg-turbo libwebp freetype \
+      icu-libs icu-data-full \
+ && apk add --no-cache --virtual .build-deps \
+      $PHPIZE_DEPS \
+      libpng-dev libjpeg-turbo-dev libwebp-dev freetype-dev \
+      icu-dev \
+ && docker-php-ext-configure gd --with-jpeg --with-webp --with-freetype \
+ && docker-php-ext-install -j"$(nproc)" pdo_mysql gd intl \
+ && apk del --no-network .build-deps \
  && mv /usr/local/etc/php/php.ini-production /usr/local/etc/php/php.ini
 
 COPY conf/zz-hardening.ini /usr/local/etc/php/conf.d/zz-hardening.ini

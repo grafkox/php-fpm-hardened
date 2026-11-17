@@ -3,8 +3,8 @@
 [![Build](https://github.com/Grafkox/php-fpm-hardened/actions/workflows/build.yml/badge.svg)](https://github.com/Grafkox/php-fpm-hardened/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Hardened PHP-FPM image based on the official `php:8.5-fpm-alpine`, with `pdo_mysql`
-and a restrictive PHP/FPM configuration. It is rebuilt automatically **only** when the
+Hardened PHP-FPM image based on the official `php:8.5-fpm-alpine`, with `pdo_mysql`, `gd`
+and `intl` and a restrictive PHP/FPM configuration. It is rebuilt automatically **only** when the
 official base image changes (or this repository changes), so a tag only moves when there
 is something new to deploy.
 
@@ -25,6 +25,22 @@ that talks to it via FastCGI on port 9000.
 | `latest`         | Same as `8.5`                                        |
 
 Only `linux/amd64` is published.
+
+## Extensions
+
+In addition to the extensions of the official image:
+
+| Extension | Purpose | Runtime libraries |
+|---|---|---|
+| `pdo_mysql` | MySQL/MariaDB access via PDO | – (mysqlnd) |
+| `gd` | Image processing with JPEG, WebP, PNG and FreeType support, e.g. re-encoding uploaded photos (which also drops EXIF metadata) | `libjpeg-turbo`, `libwebp`, `libpng`, `freetype` |
+| `intl` | Locale-aware formatting (numbers, dates, currencies) via ICU | `icu-libs`, `icu-data-full` |
+
+`icu-data-full` is needed for non-English locales: Alpine's `icu-libs` alone only ships
+`en_US`/`en_GB` data, so e.g. `de_DE` would silently fall back to English formatting.
+Compilers and `-dev` packages are only present during the build and are removed in the same layer.
+
+See the [changelog](CHANGELOG.md) for when what was added.
 
 ## Hardening
 
@@ -65,6 +81,7 @@ Applied on top of `php.ini-production`.
 
 - Alpine packages are upgraded at build time (`apk upgrade`), so security fixes already
   released by Alpine are included even before the official base image is rebuilt.
+- Only runtime libraries are installed; build dependencies are removed in the same layer.
 - Default user is `www-data` instead of root; deployments can override it (e.g. `user: "99:100"`).
 - Designed for and tested with `read_only`, a tmpfs on `/tmp`, `cap_drop: [ALL]`,
   `no-new-privileges` and an arbitrary non-root UID/GID.
@@ -148,14 +165,18 @@ the image, and manually via *Run workflow* (with an optional `force` input).
 1. **Check** – Resolves the current index digest (manifest list) of
    `docker.io/library/php:8.5-fpm-alpine` and compares it with the
    `org.opencontainers.image.base.digest` label of the published
-   `ghcr.io/grafkox/php-fpm-hardened:8.5`. If they match (and the run was neither a push
-   nor forced), the run ends with *Base unchanged – skipping build*.
+   `ghcr.io/grafkox/php-fpm-hardened:8.5`. If they match, it additionally checks whether Alpine
+   offers updates for any package in the published image (`apk list --upgradable`). The image
+   libraries for `gd` and `intl` are not part of the base image, so their security fixes would
+   otherwise not trigger a rebuild. If nothing changed (and the run was neither a push nor
+   forced), the run ends with *Base unchanged – skipping build*.
 2. **Build** – The base image is pinned by that digest (`PHP_BASE=php:8.5-fpm-alpine@sha256:…`),
    so the label always matches the base that was actually used. The image gets OCI labels
    (`base.name`, `base.digest`, `source`, `revision`, `created`, …).
 3. **Test** – The image is loaded locally and smoke-tested
-   ([`tests/smoke-test.sh`](tests/smoke-test.sh)): `pdo_mysql` is loaded, the hardening
-   values are active, `open_basedir` defaults and overrides work, `php-fpm -t` passes and the
+   ([`tests/smoke-test.sh`](tests/smoke-test.sh)): `pdo_mysql`, `gd` and `intl` are loaded,
+   GD supports JPEG/WebP/PNG/FreeType and re-encodes images under production flags, `intl`
+   formats `de_DE` correctly, no build dependencies are left, the hardening values are active, `open_basedir` defaults and overrides work, `php-fpm -t` passes and the
    container becomes ready with production-like flags (`--read-only`, tmpfs, `--cap-drop ALL`,
    `no-new-privileges`, `--user 99:100`). **If any test fails, nothing is pushed.**
 4. **Push** – Exactly the tested image is tagged `8.5`, `8.5.x` and `latest` and pushed to GHCR.
@@ -168,7 +189,7 @@ All actions are pinned to full commit SHAs (with a version comment for Dependabo
 
 Because a new image is only pushed when something actually changed, tools that watch registry
 digests (Watchtower, Arcane, Renovate, …) update the container exactly when the upstream image
-received updates.
+or one of its Alpine packages received updates.
 
 GitHub disables scheduled workflows in public repositories after 60 days without activity.
 A small `keepalive` job re-enables the workflow via the GitHub API on each scheduled run, which

@@ -23,11 +23,52 @@ check_ini() {
 }
 
 # Extensions
-if run_php "$IMAGE" php -m | grep -qx 'pdo_mysql'; then
-  pass "pdo_mysql loaded"
+modules="$(run_php "$IMAGE" php -m)"
+for ext in pdo_mysql gd intl; do
+  if grep -qx "$ext" <<<"$modules"; then
+    pass "$ext loaded"
+  else
+    fail "$ext not loaded"
+  fi
+done
+
+# GD image formats
+actual="$(run_php "$IMAGE" php -r 'var_dump(gd_info()["JPEG Support"], gd_info()["WebP Support"]);')"
+if [[ "$actual" == $'bool(true)\nbool(true)' ]]; then
+  pass "gd JPEG and WebP support"
 else
-  fail "pdo_mysql not loaded"
+  fail "gd JPEG/WebP support: expected two bool(true), got '$actual'"
 fi
+actual="$(run_php "$IMAGE" php -r 'var_dump(gd_info()["PNG Support"], gd_info()["FreeType Support"]);')"
+if [[ "$actual" == $'bool(true)\nbool(true)' ]]; then
+  pass "gd PNG and FreeType support"
+else
+  fail "gd PNG/FreeType support: expected two bool(true), got '$actual'"
+fi
+
+# intl with German locale data (icu-libs alone only ships en_US/en_GB)
+actual="$(run_php "$IMAGE" php -r 'echo (new NumberFormatter("de_DE", NumberFormatter::DECIMAL))->format(1234.5), " ", (new IntlDateFormatter("de_DE", IntlDateFormatter::NONE, IntlDateFormatter::NONE, "UTC", null, "MMMM"))->format(0);')"
+if [[ "$actual" == "1.234,5 Januar" ]]; then
+  pass "intl formats de_DE ($actual)"
+else
+  fail "intl de_DE formatting: expected '1.234,5 Januar', got '$actual'"
+fi
+
+# Only runtime libraries may remain; build dependencies must be gone
+packages="$(run_php "$IMAGE" apk info 2>/dev/null)"
+leftovers="$(grep -xE '.*-dev|gcc|g\+\+|make|autoconf|re2c|pkgconf|\.build-deps|\.phpize-deps.*' <<<"$packages" || true)"
+if [[ -z "$leftovers" ]]; then
+  pass "no build dependencies left in the image"
+else
+  fail "build dependencies left in the image: $(tr '\n' ' ' <<<"$leftovers")"
+fi
+for pkg in libpng libjpeg-turbo libwebp freetype icu-libs icu-data-full; do
+  if grep -qx "$pkg" <<<"$packages"; then
+    pass "runtime package $pkg installed"
+  else
+    fail "runtime package $pkg missing"
+  fi
+done
 
 # Hardening values (ini_get returns "" for Off and "1" for On)
 check_ini expose_php ""
@@ -87,6 +128,32 @@ if [[ "$ready" == 1 ]]; then
 else
   fail "container did not become ready"
   docker logs "$cid" >&2 || true
+fi
+
+# Re-encode images with GD under production flags (read-only root, writes only to /tmp)
+# shellcheck disable=SC2016  # PHP code, $ must not be expanded by the shell
+reencode='
+$src = imagecreatetruecolor(32, 16);
+imagefilledrectangle($src, 0, 0, 31, 15, imagecolorallocate($src, 200, 30, 30));
+$ok = imagejpeg($src, "/tmp/t.jpg", 85) && imagewebp($src, "/tmp/t.webp", 80) && imagepng($src, "/tmp/t.png");
+foreach (["/tmp/t.jpg" => IMAGETYPE_JPEG, "/tmp/t.webp" => IMAGETYPE_WEBP, "/tmp/t.png" => IMAGETYPE_PNG] as $f => $type) {
+    $info = getimagesize($f);
+    $ok = $ok && $info[0] === 32 && $info[2] === $type;
+}
+$jpeg = imagecreatefromjpeg("/tmp/t.jpg");
+$ok = $ok && $jpeg !== false && imagejpeg($jpeg, "/tmp/t2.jpg");
+echo $ok ? "ok" : "failed";
+'
+actual="$(docker run --rm \
+  --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --user 99:100 \
+  -e PHP_OPEN_BASEDIR=/var/www/html:/tmp \
+  "$IMAGE" php -r "$reencode" 2>&1)"
+if [[ "$actual" == "ok" ]]; then
+  pass "gd re-encodes JPEG/WebP/PNG with production flags"
+else
+  fail "gd re-encode with production flags: $actual"
 fi
 
 if (( failures > 0 )); then
